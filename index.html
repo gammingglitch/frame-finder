@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0c0c0b">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Frame Finder</title>
+<style>
+/* Layout: full-screen viewfinder in the middle, chips above, shutter below.
+   Look: dark on purpose (a camera screen), film-box amber accent, green only for "aligned". */
+:root {
+  --bg: #0c0c0b;
+  --panel: #151513;
+  --line: #2b2a26;
+  --fg: #f1efe8;
+  --muted: #9b988c;
+  --accent: #f2b632;
+  --ok: #79d493;
+  --warn: #ff8a5c;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.4 var(--sans); overflow: hidden; overscroll-behavior: none; touch-action: manipulation;
+}
+button { font: inherit; color: inherit; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#app {
+  height: 100%; height: 100dvh; display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top, 0px) max(0px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(0px, env(safe-area-inset-left, 0px));
+}
+
+.chips {
+  display: flex; gap: 8px; padding: 10px 12px; overflow-x: auto; scrollbar-width: none;
+}
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  appearance: none; flex: none; min-height: 40px; padding: 8px 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); font-weight: 600; font-size: 13px; white-space: nowrap; cursor: pointer;
+}
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.chip .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: -1px; }
+
+#stagewrap { flex: 1; min-height: 0; display: grid; place-items: center; padding: 0 8px; }
+#stage { position: relative; overflow: hidden; border-radius: 12px; background: #000; width: 100%; height: 100%; }
+#video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#stage.mirror #video { transform: scaleX(-1); }
+#vig, #overlay, #flash { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#flash { background: #fff; opacity: 0; }
+#flash.go { animation: flash 220ms ease-out; }
+@keyframes flash { from { opacity: .85; } to { opacity: 0; } }
+
+#hint {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px);
+  padding: 7px 14px; border-radius: 999px; background: rgba(0,0,0,.58); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  font: 600 13px var(--mono); letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#hint.ok { color: var(--ok); }
+#hint.idle { color: var(--muted); }
+#hint[hidden] { display: none; }
+#levelbadge {
+  position: absolute; left: 10px; bottom: 10px; padding: 4px 9px; border-radius: 8px; background: rgba(0,0,0,.5);
+  font: 600 12px var(--mono); font-variant-numeric: tabular-nums;
+}
+#levelbadge.ok { color: var(--ok); }
+#levelbadge[hidden] { display: none; }
+#zoom { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
+#zoom button {
+  appearance: none; min-width: 40px; height: 32px; padding: 0 10px; border-radius: 999px; border: 0;
+  background: rgba(0,0,0,.5); font: 600 12px var(--mono); cursor: pointer;
+}
+#zoom button[aria-pressed="true"] { color: var(--accent); }
+#count {
+  position: absolute; inset: 0; display: grid; place-items: center; font: 700 96px var(--mono); color: #fff;
+  text-shadow: 0 2px 18px rgba(0,0,0,.6); pointer-events: none;
+}
+#count[hidden] { display: none; }
+
+#controls { padding: 4px 0 14px; }
+#shutterrow { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 6px 20px 0; }
+#shutter {
+  appearance: none; width: 78px; height: 78px; border-radius: 50%; border: 4px solid var(--fg); background: transparent; padding: 0; cursor: pointer;
+  display: grid; place-items: center;
+}
+#shutter::after { content: ""; width: 60px; height: 60px; border-radius: 50%; background: var(--fg); transition: transform 90ms; }
+#shutter:active::after { transform: scale(.88); }
+#shutter:disabled { opacity: .5; }
+#flip {
+  appearance: none; justify-self: end; width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--panel); cursor: pointer; display: grid; place-items: center;
+}
+#flip svg { width: 24px; height: 24px; }
+#sizeinfo { font: 12px var(--mono); color: var(--muted); }
+
+.screen {
+  position: absolute; inset: 0; z-index: 5; background: var(--bg); display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top, 0px) max(0px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(0px, env(safe-area-inset-left, 0px));
+}
+.screen[hidden] { display: none; }
+#start { align-items: center; justify-content: center; text-align: center; gap: 14px; padding-left: 28px; padding-right: 28px; }
+#start h1 { margin: 0; font-size: 30px; letter-spacing: -.01em; }
+#start p { margin: 0; max-width: 34ch; color: var(--muted); }
+#start .fine { font-size: 13px; }
+#start .err { color: var(--warn); max-width: 38ch; }
+.primary {
+  appearance: none; border: 0; border-radius: 999px; padding: 14px 28px; background: var(--accent); color: #1a1405; font-weight: 700; font-size: 16px; cursor: pointer;
+}
+.ghost {
+  appearance: none; border: 1px solid var(--line); border-radius: 999px; padding: 13px 22px; background: var(--panel); font-weight: 600; font-size: 15px; cursor: pointer;
+}
+#reviewwrap { flex: 1; min-height: 0; display: grid; place-items: center; padding: 10px; }
+#reviewcanvas { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
+.label { padding: 4px 14px 0; font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+#actions { display: flex; gap: 10px; padding: 8px 12px 14px; }
+#actions button { flex: 1; min-height: 48px; padding-left: 10px; padding-right: 10px; }
+#actions .primary { flex: 1.4; }
+#actions [hidden] { display: none; }
+
+#toast {
+  position: fixed; left: 50%; bottom: calc(110px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 9;
+  padding: 10px 16px; border-radius: 12px; background: #2a2926; color: var(--fg); font-size: 14px; max-width: calc(100% - 32px); text-align: center;
+}
+#toast[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) { #flash.go { animation: none; } #shutter::after { transition: none; } }
+</style>
+</head>
+<body>
+<main id="app">
+  <div class="chips" id="topchips" role="toolbar" aria-label="Camera options">
+    <button class="chip" id="bGuide" type="button" aria-pressed="true">Guide</button>
+    <button class="chip" id="bGrid" type="button" aria-pressed="true">Grid</button>
+    <button class="chip" id="bLevel" type="button" aria-pressed="true">Level</button>
+    <button class="chip" id="bRatio" type="button" aria-label="Photo shape">4:3</button>
+    <button class="chip" id="bTimer" type="button" aria-label="Self timer">Timer off</button>
+  </div>
+
+  <div id="stagewrap">
+    <div id="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <div id="vig"></div>
+      <canvas id="overlay"></canvas>
+      <div id="hint" class="idle" role="status" aria-live="polite" hidden></div>
+      <div id="levelbadge" hidden>0.0°</div>
+      <div id="zoom" hidden></div>
+      <div id="count" hidden></div>
+      <div id="flash"></div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <div class="chips" id="filterchips" role="radiogroup" aria-label="Filter"></div>
+    <div id="shutterrow">
+      <span id="sizeinfo"></span>
+      <button id="shutter" type="button" aria-label="Take photo"></button>
+      <button id="flip" type="button" aria-label="Switch camera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9a8 8 0 0 1 14-3l2 2"/><path d="M20 4v4h-4"/><path d="M20 15a8 8 0 0 1-14 3l-2-2"/><path d="M4 20v-4h4"/></svg>
+      </button>
+    </div>
+  </div>
+</main>
+
+<section id="review" class="screen" hidden aria-label="Review photo">
+  <div id="reviewwrap"><canvas id="reviewcanvas"></canvas></div>
+  <div class="label">Filter</div>
+  <div class="chips" id="rFilters" role="radiogroup" aria-label="Filter"></div>
+  <div class="label">Frame</div>
+  <div class="chips" id="rFrames" role="radiogroup" aria-label="Frame"></div>
+  <div id="actions">
+    <button class="ghost" id="bRetake" type="button">Retake</button>
+    <button class="ghost" id="bShare" type="button">Share</button>
+    <button class="primary" id="bSave" type="button">Save</button>
+  </div>
+</section>
+
+<section id="start" class="screen">
+  <h1>Frame Finder</h1>
+  <p>Point at something. The app shows where to move the phone so your subject sits on a power point, and tells you when the horizon is level.</p>
+  <button class="primary" id="startBtn" type="button">Start camera</button>
+  <p class="fine">Everything runs on your phone. Nothing is uploaded.</p>
+  <p class="err" id="startErr" hidden></p>
+</section>
+
+<div id="toast" hidden role="status"></div>
+
+<script>
+(() => {
+'use strict';
+
+/* <core> — pure logic, no DOM. Tested separately. */
+const THIRDS = [[1/3, 1/3], [2/3, 1/3], [1/3, 2/3], [2/3, 2/3]];
+
+function cropFor(w, h, t) {
+  if (!t) return { sx: 0, sy: 0, sw: w, sh: h };
+  const a = w / h;
+  if (a > t) { const sw = h * t; return { sx: (w - sw) / 2, sy: 0, sw: sw, sh: h }; }
+  const sh = w / t;
+  return { sx: 0, sy: (h - sh) / 2, sw: w, sh: sh };
+}
+
+function targetAspect(ratio, portrait) {
+  if (!ratio) return null;
+  return portrait ? 1 / ratio : ratio;
+}
+
+function levelFromAccel(x, y, z) {
+  if ([x, y, z].some(v => typeof v !== 'number' || !isFinite(v))) return null;
+  if (Math.abs(z) > 8.4) return null;
+  const r = Math.atan2(x, y) * 180 / Math.PI;
+  return r - 90 * Math.round(r / 90);
+}
+
+function analyzeFrame(d, w, h) {
+  const n = w * h;
+  const lum = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) lum[i] = 0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2];
+  const bx = Math.max(1, Math.round(w * 0.08)), by = Math.max(1, Math.round(h * 0.08));
+  let br = 0, bg = 0, bb = 0, bc = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (x < bx || x >= w - bx || y < by || y >= h - by) {
+        const p = (y * w + x) * 4;
+        br += d[p]; bg += d[p + 1]; bb += d[p + 2]; bc++;
+      }
+    }
+  }
+  br /= bc; bg /= bc; bb /= bc;
+  const wt = new Float32Array(n);
+  let sum = 0, sum2 = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x, p = i * 4;
+      const gx = lum[i + 1] - lum[i - 1], gy = lum[i + w] - lum[i - w];
+      const grad = Math.min(1, Math.hypot(gx, gy) / 128);
+      const dr = d[p] - br, dg = d[p + 1] - bg, db = d[p + 2] - bb;
+      const col = Math.sqrt(dr * dr + dg * dg + db * db) / 441;
+      const v = grad * 1.1 + col;
+      wt[i] = v; sum += v; sum2 += v * v;
+    }
+  }
+  const m = sum / n, s = Math.sqrt(Math.max(0, sum2 / n - m * m));
+  if (s < 0.02) return null;
+  const thr = m + 0.6 * s;
+  let tot = 0, cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) {
+    const t = wt[i] - thr;
+    if (t > 0) { const q = t * t; tot += q; cx += q * (i % w); cy += q * ((i / w) | 0); }
+  }
+  if (tot < 1e-3) return null;
+  cx /= tot; cy /= tot;
+  let vx = 0, vy = 0;
+  for (let i = 0; i < n; i++) {
+    const t = wt[i] - thr;
+    if (t > 0) { const q = t * t; const ex = (i % w) - cx, ey = ((i / w) | 0) - cy; vx += q * ex * ex; vy += q * ey * ey; }
+  }
+  return { cx: (cx + 0.5) / w, cy: (cy + 0.5) / h, sx: Math.sqrt(vx / tot) / w, sy: Math.sqrt(vy / tot) / h };
+}
+
+function guide(s, mirror) {
+  const tol = 0.07;
+  const cands = s.kind === 'face' ? [[1/3, 0.38], [2/3, 0.38], [0.5, 0.38]] : THIRDS;
+  let best = cands[0], bd = Infinity;
+  for (const p of cands) {
+    const dd = Math.hypot(p[0] - s.cx, p[1] - s.cy);
+    if (dd < bd) { bd = dd; best = p; }
+  }
+  const dx = best[0] - s.cx, dy = best[1] - s.cy;
+  const acts = [];
+  if (dx > tol) acts.push(mirror ? 'Pan right' : 'Pan left');
+  else if (dx < -tol) acts.push(mirror ? 'Pan left' : 'Pan right');
+  if (dy > tol) acts.push('Tilt up');
+  else if (dy < -tol) acts.push('Tilt down');
+  if (s.kind === 'face' && s.h) {
+    if (s.h < 0.1) acts.push('Move closer');
+    else if (s.h > 0.55) acts.push('Step back');
+  }
+  return { target: best, dx: dx, dy: dy, ok: acts.length === 0, actions: acts };
+}
+/* </core> */
+
+const $ = (s) => document.querySelector(s);
+const video = $('#video'), stage = $('#stage'), overlay = $('#overlay');
+
+const RATIOS = [{ id: '4:3', v: 4 / 3 }, { id: '1:1', v: 1 }, { id: '16:9', v: 16 / 9 }, { id: 'Full', v: null }];
+const FILTERS = [
+  { id: 'natural', name: 'Natural', sw: '#cfcabb', css: 'none', vignette: 0 },
+  { id: 'film', name: 'Film', sw: '#d9a35b', css: 'contrast(1.06) saturate(1.12) sepia(0.16) hue-rotate(-6deg) brightness(1.02)', vignette: 0.22 },
+  { id: 'golden', name: 'Golden', sw: '#f2b632', css: 'contrast(1.04) saturate(1.2) sepia(0.28) hue-rotate(-12deg) brightness(1.04)', vignette: 0.16 },
+  { id: 'cool', name: 'Cool', sw: '#7fa8c9', css: 'contrast(1.08) saturate(0.95) hue-rotate(10deg) brightness(1.01)', vignette: 0.12 },
+  { id: 'fade', name: 'Fade', sw: '#b9b3a6', css: 'contrast(0.88) saturate(0.85) brightness(1.08) sepia(0.08)', vignette: 0 },
+  { id: 'mono', name: 'Mono', sw: '#777', css: 'grayscale(1) contrast(1.15)', vignette: 0.25 }
+];
+const evenMargin = (w, h, s) => { const b = Math.round(s * 0.05); return { l: b, t: b, r: b, b: b }; };
+const FRAMES = [
+  { id: 'none', name: 'None', bg: '#000', margins: () => ({ l: 0, t: 0, r: 0, b: 0 }) },
+  { id: 'white', name: 'White', bg: '#fbfaf6', margins: evenMargin },
+  { id: 'black', name: 'Black', bg: '#0b0b0a', margins: evenMargin },
+  {
+    id: 'polaroid', name: 'Polaroid', bg: '#f6f2e8',
+    margins: (w, h, s) => { const b = Math.round(s * 0.055); return { l: b, t: b, r: b, b: Math.round(s * 0.19) }; },
+    deco: (g, W, H, m) => {
+      g.fillStyle = '#6b665a';
+      g.font = Math.max(10, Math.round(m.b * 0.2)) + 'px ui-monospace, Menlo, Consolas, monospace';
+      g.textAlign = 'right'; g.textBaseline = 'middle';
+      const txt = new Date().toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
+      g.fillText(txt, W - m.r, H - m.b * 0.42);
+    }
+  },
+  {
+    id: 'film', name: 'Film strip', bg: '#0a0a09',
+    margins: (w, h, s) => { const b = Math.round(s * 0.075); return { l: 0, t: b, r: 0, b: b }; },
+    deco: (g, W, H, m) => {
+      const size = m.t * 0.42, gap = size * 0.9;
+      g.fillStyle = '#d9d5c8';
+      for (let x = gap; x < W - size; x += size + gap) {
+        const ry = (m.t - size) / 2;
+        g.beginPath(); g.roundRect ? g.roundRect(x, ry, size, size, size * 0.2) : g.rect(x, ry, size, size); g.fill();
+        g.beginPath(); g.roundRect ? g.roundRect(x, H - m.t + ry, size, size, size * 0.2) : g.rect(x, H - m.t + ry, size, size); g.fill();
+      }
+    }
+  }
+];
+
+const state = {
+  facing: 'environment', guide: true, grid: true, level: true, ratioIdx: 0, timer: 0,
+  filter: 'natural', frame: 'none', started: false, busy: false, cancel: false,
+  track: null, imageCapture: null, photoSettings: null, zoom: 1,
+  subject: null, miss: 0, faces: [], facesAt: 0, roll: null, mirror: false, review: null
+};
+
+try {
+  const saved = JSON.parse(localStorage.getItem('frame-finder') || '{}');
+  ['guide', 'grid', 'level'].forEach(k => { if (typeof saved[k] === 'boolean') state[k] = saved[k]; });
+  if (Number.isInteger(saved.ratioIdx) && RATIOS[saved.ratioIdx]) state.ratioIdx = saved.ratioIdx;
+  if (FILTERS.some(f => f.id === saved.filter)) state.filter = saved.filter;
+} catch (_) {}
+function persist() {
+  try { localStorage.setItem('frame-finder', JSON.stringify({ guide: state.guide, grid: state.grid, level: state.level, ratioIdx: state.ratioIdx, filter: state.filter })); } catch (_) {}
+}
+
+/* ---------- small UI helpers ---------- */
+let toastTimer = 0;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2800);
+}
+const curFilter = () => FILTERS.find(f => f.id === state.filter) || FILTERS[0];
+const curFrame = () => FRAMES.find(f => f.id === state.frame) || FRAMES[0];
+
+function buildChips(host, items, key, onPick, withSwatch) {
+  host.textContent = '';
+  items.forEach(it => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip'; b.setAttribute('role', 'radio'); b.dataset.id = it.id;
+    if (withSwatch) { const s = document.createElement('span'); s.className = 'sw'; s.style.background = it.sw; b.appendChild(s); }
+    b.appendChild(document.createTextNode(it.name));
+    b.addEventListener('click', () => { state[key] = it.id; syncChips(); onPick(); });
+    host.appendChild(b);
+  });
+}
+function syncChips() {
+  document.querySelectorAll('[data-id]').forEach(b => {
+    const host = b.parentElement.id;
+    const cur = (host === 'rFrames') ? state.frame : state.filter;
+    const on = b.dataset.id === cur;
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+}
+function syncTop() {
+  $('#bGuide').setAttribute('aria-pressed', state.guide);
+  $('#bGrid').setAttribute('aria-pressed', state.grid);
+  $('#bLevel').setAttribute('aria-pressed', state.level);
+  $('#bRatio').textContent = RATIOS[state.ratioIdx].id;
+  $('#bTimer').textContent = state.timer ? 'Timer ' + state.timer + 's' : 'Timer off';
+  $('#bTimer').setAttribute('aria-pressed', state.timer ? 'true' : 'false');
+}
+function applyLiveFilter() {
+  const f = curFilter();
+  video.style.filter = f.css === 'none' ? '' : f.css;
+  $('#vig').style.background = f.vignette
+    ? 'radial-gradient(circle farthest-corner at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,' + f.vignette + ') 105%)' : 'none';
+}
+
+/* ---------- viewfinder sizing ---------- */
+function stageAspect() {
+  const vw = video.videoWidth || 3, vh = video.videoHeight || 4;
+  const r = RATIOS[state.ratioIdx].v;
+  return r ? (vh >= vw ? 1 / r : r) : vw / vh;
+}
+function fitStage() {
+  const wrap = $('#stagewrap');
+  const W = wrap.clientWidth - 16, H = wrap.clientHeight - 8;
+  if (W <= 0 || H <= 0) return;
+  const a = stageAspect();
+  let w = W, h = W / a;
+  if (h > H) { h = H; w = H * a; }
+  stage.style.width = Math.floor(w) + 'px';
+  stage.style.height = Math.floor(h) + 'px';
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  overlay.width = Math.round(w * dpr); overlay.height = Math.round(h * dpr);
+  scheduleDraw();
+}
+
+/* ---------- overlay drawing ---------- */
+let drawQueued = false;
+function scheduleDraw() {
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; draw(); });
+}
+function ring(g, x, y, r, color, width) {
+  g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.strokeStyle = color; g.lineWidth = width; g.stroke();
+}
+let lastHint = '';
+function draw() {
+  const g = overlay.getContext('2d'), W = overlay.width, H = overlay.height;
+  g.clearRect(0, 0, W, H);
+  const u = Math.max(1, W / 380);
+  if (state.grid) {
+    g.strokeStyle = 'rgba(255,255,255,0.3)'; g.lineWidth = Math.max(1, u * 0.8);
+    g.beginPath();
+    for (let i = 1; i <= 2; i++) {
+      g.moveTo(W * i / 3, 0); g.lineTo(W * i / 3, H);
+      g.moveTo(0, H * i / 3); g.lineTo(W, H * i / 3);
+    }
+    g.stroke();
+  }
+  let gd = null;
+  if (state.guide && state.subject) {
+    gd = guide(state.subject, state.mirror);
+    const sx = state.subject.cx * W, sy = state.subject.cy * H;
+    const tx = gd.target[0] * W, ty = gd.target[1] * H;
+    const col = gd.ok ? '#79d493' : '#f2b632';
+    if (!gd.ok) {
+      g.setLineDash([6 * u, 6 * u]); g.beginPath(); g.moveTo(sx, sy); g.lineTo(tx, ty);
+      g.strokeStyle = col; g.lineWidth = 2 * u; g.stroke(); g.setLineDash([]);
+      ring(g, tx, ty, 15 * u, col, 2.5 * u);
+      ring(g, tx, ty, 3 * u, col, 2 * u);
+    } else {
+      ring(g, sx, sy, 17 * u, col, 3 * u);
+    }
+    ring(g, sx, sy, 8 * u, 'rgba(255,255,255,0.95)', 2 * u);
+  }
+  if (state.level && state.roll != null) {
+    const cx = W / 2, cy = H / 2, flat = Math.abs(state.roll) < 1.2;
+    g.lineCap = 'round';
+    g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 2 * u;
+    g.beginPath();
+    g.moveTo(W * 0.24, cy); g.lineTo(W * 0.3, cy);
+    g.moveTo(W * 0.7, cy); g.lineTo(W * 0.76, cy);
+    g.stroke();
+    g.save(); g.translate(cx, cy); g.rotate(state.roll * Math.PI / 180);
+    g.strokeStyle = flat ? '#79d493' : '#f2b632'; g.lineWidth = (flat ? 3.2 : 2.4) * u;
+    g.beginPath(); g.moveTo(-W * 0.2, 0); g.lineTo(-W * 0.06, 0); g.moveTo(W * 0.06, 0); g.lineTo(W * 0.2, 0); g.stroke();
+    g.restore();
+  }
+  updateReadouts(gd);
+}
+function updateReadouts(gd) {
+  const hint = $('#hint');
+  const parts = [];
+  let cls = 'idle';
+  if (state.guide) {
+    if (!state.subject) parts.push('Looking for a subject');
+    else if (gd && gd.ok) { parts.push('Nice framing'); cls = 'ok'; }
+    else if (gd) { parts.push.apply(parts, gd.actions); cls = ''; }
+  }
+  if (state.level && state.roll != null && Math.abs(state.roll) > 3) { parts.push(state.roll < 0 ? 'Rotate left' : 'Rotate right'); if (cls === 'idle') cls = ''; }
+  const text = parts.join(' · ');
+  if (text !== lastHint) {
+    lastHint = text; hint.textContent = text; hint.hidden = !text;
+    hint.className = cls;
+  }
+  const lb = $('#levelbadge');
+  if (state.level && state.roll != null) {
+    lb.hidden = false; lb.textContent = (state.roll > 0 ? '+' : '') + state.roll.toFixed(1) + '°';
+    lb.className = Math.abs(state.roll) < 1.2 ? 'ok' : '';
+  } else lb.hidden = true;
+}
+
+/* ---------- subject analysis ---------- */
+const anal = document.createElement('canvas');
+const analBig = document.createElement('canvas');
+let detector = null;
+try { if ('FaceDetector' in window) detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 6 }); } catch (_) { detector = null; }
+
+function drawVisible(canvas, width) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const a = stageAspect();
+  const c = cropFor(vw, vh, a);
+  canvas.width = width; canvas.height = Math.max(2, Math.round(width / a));
+  const g = canvas.getContext('2d', { willReadFrequently: true });
+  g.save();
+  if (state.mirror) { g.translate(canvas.width, 0); g.scale(-1, 1); }
+  g.drawImage(video, c.sx, c.sy, c.sw, c.sh, 0, 0, canvas.width, canvas.height);
+  g.restore();
+  return g;
+}
+
+let tickN = 0, tickTimer = 0;
+async function tick() {
+  clearTimeout(tickTimer);
+  const t0 = performance.now();
+  try {
+    if (state.started && !document.hidden && !state.review && video.videoWidth && state.guide) {
+      const g = drawVisible(anal, 96);
+      const img = g.getImageData(0, 0, anal.width, anal.height);
+      let subj = null;
+      if (detector && tickN % 3 === 0) {
+        drawVisible(analBig, 320);
+        try {
+          const res = await detector.detect(analBig);
+          state.faces = res.map(f => ({ x: f.boundingBox.x / analBig.width, y: f.boundingBox.y / analBig.height, w: f.boundingBox.width / analBig.width, h: f.boundingBox.height / analBig.height }));
+          if (state.faces.length) state.facesAt = performance.now();
+        } catch (_) { detector = null; }
+      }
+      if (state.faces.length && performance.now() - state.facesAt < 700) {
+        const f = state.faces;
+        const x0 = Math.min.apply(null, f.map(a => a.x)), x1 = Math.max.apply(null, f.map(a => a.x + a.w));
+        const y0 = Math.min.apply(null, f.map(a => a.y)), y1 = Math.max.apply(null, f.map(a => a.y + a.h));
+        subj = { kind: 'face', cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, h: Math.max.apply(null, f.map(a => a.h)) };
+      } else {
+        const r = analyzeFrame(img.data, img.width, img.height);
+        if (r) subj = { kind: 'subject', cx: r.cx, cy: r.cy };
+      }
+      if (subj) {
+        const p = state.subject;
+        if (p && p.kind === subj.kind) { subj.cx = p.cx + (subj.cx - p.cx) * 0.4; subj.cy = p.cy + (subj.cy - p.cy) * 0.4; }
+        state.subject = subj; state.miss = 0;
+      } else if (++state.miss > 4) state.subject = null;
+      scheduleDraw();
+    }
+  } catch (_) {}
+  tickN++;
+  tickTimer = setTimeout(tick, Math.max(70, 140 - (performance.now() - t0)));
+}
+
+/* ---------- level sensor ---------- */
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a) return;
+  const r = levelFromAccel(a.x, a.y, a.z);
+  state.roll = r == null ? null : (state.roll == null ? r : state.roll + (r - state.roll) * 0.25);
+  scheduleDraw();
+}
+
+/* ---------- camera ---------- */
+function stopStream() {
+  const s = video.srcObject;
+  if (s) s.getTracks().forEach(t => t.stop());
+  video.srcObject = null; state.track = null; state.imageCapture = null;
+}
+async function startCamera() {
+  stopStream();
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const e = new Error('insecure'); e.name = 'Insecure'; throw e;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: state.facing }, width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } } });
+  } catch (e) {
+    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') throw e;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+  }
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  const track = stream.getVideoTracks()[0];
+  state.track = track;
+  const st = track.getSettings ? track.getSettings() : {};
+  state.mirror = st.facingMode ? st.facingMode === 'user' : state.facing === 'user';
+  stage.classList.toggle('mirror', state.mirror);
+  state.photoSettings = null;
+  if ('ImageCapture' in window) {
+    try {
+      state.imageCapture = new ImageCapture(track);
+      const caps = await state.imageCapture.getPhotoCapabilities();
+      if (caps.imageWidth && caps.imageHeight && caps.imageWidth.max <= 4400 && caps.imageHeight.max <= 4400) {
+        state.photoSettings = { imageWidth: caps.imageWidth.max, imageHeight: caps.imageHeight.max };
+      }
+    } catch (_) { /* fall back to the default photo size */ }
+  }
+  buildZoom(track);
+  if (!video.videoWidth) await new Promise(r => { video.onloadedmetadata = r; setTimeout(r, 1500); });
+  fitStage();
+  const sz = video.videoWidth ? video.videoWidth + '×' + video.videoHeight : '';
+  $('#sizeinfo').textContent = state.photoSettings ? state.photoSettings.imageWidth + '×' + state.photoSettings.imageHeight : sz;
+}
+function buildZoom(track) {
+  const host = $('#zoom'); host.textContent = '';
+  let z = null;
+  try { z = track.getCapabilities && track.getCapabilities().zoom; } catch (_) {}
+  if (!z || !(z.max > z.min)) { host.hidden = true; return; }
+  const steps = [0.5, 1, 2, 3, 5].filter(v => v >= z.min - 1e-6 && v <= z.max + 1e-6);
+  if (steps.length < 2) { host.hidden = true; return; }
+  state.zoom = Math.max(z.min, 1);
+  steps.forEach(v => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = v + '×'; b.dataset.z = v;
+    b.setAttribute('aria-pressed', v === 1 ? 'true' : 'false');
+    b.addEventListener('click', async () => {
+      try { await track.applyConstraints({ advanced: [{ zoom: v }] }); state.zoom = v; } catch (_) { toast('This camera does not support that zoom.'); return; }
+      host.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+    });
+    host.appendChild(b);
+  });
+  host.hidden = false;
+}
+
+/* ---------- capture ---------- */
+function flash() { const f = $('#flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
+function countdown(sec) {
+  return new Promise((resolve, reject) => {
+    const el = $('#count'); let n = sec; state.cancel = false;
+    el.hidden = false; el.textContent = n;
+    const iv = setInterval(() => {
+      if (state.cancel) { clearInterval(iv); el.hidden = true; reject(new Error('cancel')); return; }
+      n--;
+      if (n <= 0) { clearInterval(iv); el.hidden = true; resolve(); } else el.textContent = n;
+    }, 1000);
+  });
+}
+async function rotate90(bmp) {
+  const c = document.createElement('canvas'); c.width = bmp.height; c.height = bmp.width;
+  const g = c.getContext('2d'); g.translate(c.width, 0); g.rotate(Math.PI / 2); g.drawImage(bmp, 0, 0);
+  return createImageBitmap(c);
+}
+async function grabStill() {
+  let blob = null, bmp = null;
+  if (state.imageCapture) {
+    try { blob = await state.imageCapture.takePhoto(state.photoSettings || undefined); }
+    catch (_) { try { blob = await state.imageCapture.takePhoto(); } catch (__) { blob = null; } }
+    if (blob) { try { bmp = await createImageBitmap(blob); } catch (_) { bmp = null; blob = null; } }
+  }
+  if (!bmp) {
+    const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
+    c.getContext('2d').drawImage(video, 0, 0);
+    bmp = await createImageBitmap(c); blob = null;
+  }
+  const vPortrait = video.videoHeight >= video.videoWidth;
+  if ((bmp.height >= bmp.width) !== vPortrait) { bmp = await rotate90(bmp); blob = null; }
+  return { bmp: bmp, blob: blob };
+}
+async function onShutter() {
+  if (state.busy) { state.cancel = true; return; }
+  state.busy = true;
+  try {
+    if (state.timer) await countdown(state.timer);
+    flash(); if (navigator.vibrate) navigator.vibrate(15);
+    const shot = await grabStill();
+    openReview(shot);
+  } catch (e) {
+    if (e && e.message !== 'cancel') toast('Could not take the photo. Try again.');
+  } finally { state.busy = false; }
+}
+
+/* ---------- rendering the final image ---------- */
+function renderPhoto(bmp, maxSide) {
+  const portrait = bmp.height >= bmp.width;
+  const t = targetAspect(RATIOS[state.ratioIdx].v, portrait);
+  const c0 = cropFor(bmp.width, bmp.height, t);
+  const k = maxSide ? Math.min(1, maxSide / Math.max(c0.sw, c0.sh)) : 1;
+  const w = Math.round(c0.sw * k), h = Math.round(c0.sh * k);
+  const fr = curFrame(), f = curFilter();
+  const m = fr.margins(w, h, Math.min(w, h));
+  const c = document.createElement('canvas'); c.width = w + m.l + m.r; c.height = h + m.t + m.b;
+  const g = c.getContext('2d');
+  g.fillStyle = fr.bg; g.fillRect(0, 0, c.width, c.height);
+  g.save(); g.beginPath(); g.rect(m.l, m.t, w, h); g.clip();
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.filter = f.css;
+  g.drawImage(bmp, c0.sx, c0.sy, c0.sw, c0.sh, m.l, m.t, w, h);
+  g.filter = 'none';
+  if (f.vignette) {
+    const half = Math.hypot(w, h) / 2, cx = m.l + w / 2, cy = m.t + h / 2;
+    const gr = g.createRadialGradient(cx, cy, half * 0.55, cx, cy, half * 1.05);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,' + f.vignette + ')');
+    g.fillStyle = gr; g.fillRect(m.l, m.t, w, h);
+  }
+  g.restore();
+  if (fr.deco) fr.deco(g, c.width, c.height, m);
+  return c;
+}
+function isUntouched(bmp) {
+  if (state.filter !== 'natural' || state.frame !== 'none') return false;
+  const t = targetAspect(RATIOS[state.ratioIdx].v, bmp.height >= bmp.width);
+  const c = cropFor(bmp.width, bmp.height, t);
+  return Math.abs(c.sw - bmp.width) < 2 && Math.abs(c.sh - bmp.height) < 2;
+}
+
+/* ---------- review screen ---------- */
+let reviewQueued = false;
+function drawReview() {
+  if (reviewQueued || !state.review) return;
+  reviewQueued = true;
+  requestAnimationFrame(() => {
+    reviewQueued = false;
+    if (!state.review) return;
+    const c = renderPhoto(state.review.bmp, 1400), out = $('#reviewcanvas');
+    out.width = c.width; out.height = c.height;
+    out.getContext('2d').drawImage(c, 0, 0);
+  });
+}
+function openReview(shot) {
+  state.review = shot; state.frame = 'none'; syncChips();
+  $('#review').hidden = false;
+  $('#bShare').hidden = !(navigator.canShare && navigator.share);
+  drawReview();
+}
+function closeReview() {
+  if (state.review && state.review.bmp.close) state.review.bmp.close();
+  state.review = null; $('#review').hidden = true;
+}
+async function finalBlob() {
+  const r = state.review;
+  if (r.blob && isUntouched(r.bmp)) return r.blob;
+  const c = renderPhoto(r.bmp, 0);
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('encode')), 'image/jpeg', 0.95));
+}
+function fileName() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return 'frame-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + '.jpg';
+}
+async function onSave() {
+  const btn = $('#bSave'); btn.disabled = true;
+  try {
+    const blob = await finalBlob();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName();
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+    toast('Saved to your Downloads folder');
+  } catch (_) { toast('Could not save the photo.'); }
+  btn.disabled = false;
+}
+async function onShare() {
+  try {
+    const blob = await finalBlob();
+    const file = new File([blob], fileName(), { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file] });
+    else toast('Sharing is not available here. Use Save.');
+  } catch (e) { if (e && e.name !== 'AbortError') toast('Could not share the photo.'); }
+}
+
+/* ---------- wiring ---------- */
+buildChips($('#filterchips'), FILTERS, 'filter', () => { applyLiveFilter(); persist(); }, true);
+buildChips($('#rFilters'), FILTERS, 'filter', () => { applyLiveFilter(); persist(); drawReview(); }, true);
+buildChips($('#rFrames'), FRAMES, 'frame', drawReview, false);
+syncChips(); syncTop(); applyLiveFilter();
+
+$('#bGuide').addEventListener('click', () => { state.guide = !state.guide; if (!state.guide) state.subject = null; syncTop(); persist(); scheduleDraw(); });
+$('#bGrid').addEventListener('click', () => { state.grid = !state.grid; syncTop(); persist(); scheduleDraw(); });
+$('#bLevel').addEventListener('click', () => { state.level = !state.level; syncTop(); persist(); scheduleDraw(); });
+$('#bRatio').addEventListener('click', () => { state.ratioIdx = (state.ratioIdx + 1) % RATIOS.length; state.subject = null; syncTop(); persist(); fitStage(); });
+$('#bTimer').addEventListener('click', () => { state.timer = state.timer === 0 ? 3 : state.timer === 3 ? 10 : 0; syncTop(); });
+$('#shutter').addEventListener('click', onShutter);
+$('#flip').addEventListener('click', async () => {
+  state.facing = state.facing === 'environment' ? 'user' : 'environment'; state.subject = null; state.faces = [];
+  try { await startCamera(); } catch (_) { toast('Could not switch camera.'); state.facing = state.facing === 'environment' ? 'user' : 'environment'; }
+});
+$('#bRetake').addEventListener('click', closeReview);
+$('#bSave').addEventListener('click', onSave);
+$('#bShare').addEventListener('click', onShare);
+window.addEventListener('resize', fitStage);
+window.addEventListener('orientationchange', () => setTimeout(fitStage, 250));
+video.addEventListener('loadedmetadata', fitStage);
+document.addEventListener('visibilitychange', async () => {
+  if (!state.started) return;
+  if (document.hidden) stopStream();
+  else { try { await startCamera(); } catch (_) {} }
+});
+
+$('#startBtn').addEventListener('click', async () => {
+  const err = $('#startErr'); err.hidden = true;
+  try {
+    await startCamera();
+    state.started = true; $('#start').hidden = true;
+    window.addEventListener('devicemotion', onMotion);
+    tick();
+  } catch (e) {
+    let msg = 'The camera could not start.';
+    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') msg = 'Camera access is blocked. Allow the camera for this page in your browser settings, then tap Start camera again.';
+    else if (e.name === 'Insecure') msg = 'The camera only works on a secure (https) page. Open this app from a web address that starts with https, then try again.';
+    else if (e.name === 'NotFoundError') msg = 'No camera was found on this device.';
+    else if (e.name === 'NotReadableError') msg = 'Another app is using the camera. Close it and try again.';
+    err.textContent = msg; err.hidden = false;
+  }
+});
+})();
+</script>
+</body>
+</html>
